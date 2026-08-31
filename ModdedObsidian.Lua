@@ -3506,11 +3506,18 @@ do
 
         ColorPicker.Default = ColorPicker.Value
 
+        function ColorPicker:SetVisible(Visible)
+            Holder.Visible = Visible
+            if not Visible then
+                ColorMenu:Close()
+                ContextMenu:Close()
+            end
+        end
+
         Options[Idx] = ColorPicker
 
         return self
     end
-
     BaseAddons.__index = Funcs
     BaseAddons.__namecall = function(_, Key, ...)
         return Funcs[Key](...)

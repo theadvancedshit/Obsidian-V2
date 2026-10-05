@@ -7879,72 +7879,96 @@ function Library:CreateWindow(WindowInfo)
                 local Key = DetachKey(Name, Info.Name)
                 local DetachData = nil
 
-                -- the hole: a solid, fixed-size rectangle that holds the slot open so
-                -- the boxes below don't slide up. NOT AutomaticSize, height is locked.
-                local function MakePlaceholder(W, H)
-                    local PH = New("Frame", {
-                        AutomaticSize = Enum.AutomaticSize.None,
+                function Groupbox:Detach(Position)
+                    if DetachData then return end
+
+                    -- capture BEFORE moving anything, so the hole + slice line up exactly
+                    local BoxW = GroupboxHolder.AbsoluteSize.X
+                    local BoxH = GroupboxHolder.AbsoluteSize.Y
+                    local HolderAbs = GroupboxHolder.AbsolutePosition
+
+                    -- 1) HOLE: solid rounded frame left IN the list where the box was.
+                    -- child of BoxHolder, so the UIListLayout keeps the exact slot and
+                    -- nothing below slides up. stays only on this tab, like the box would.
+                    local Hole = New("Frame", {
                         BackgroundColor3 = "BackgroundColor",
-                        Size = UDim2.fromOffset(W, H),
-                        LayoutOrder = BoxHolder.LayoutOrder,
-                        Parent = DetachSide,
+                        Size = UDim2.new(1, 0, 0, BoxH),
+                        Parent = BoxHolder,
                     })
                     table.insert(
                         Library.Corners,
                         New("UICorner", {
                             CornerRadius = UDim.new(0, Library.CornerRadius),
-                            Parent = PH,
+                            Parent = Hole,
                         })
                     )
-                    Library:AddToRegistry(PH, { BackgroundColor3 = "BackgroundColor" })
-                    return PH
-                end
+                    Library:AddToRegistry(Hole, { BackgroundColor3 = "BackgroundColor" })
 
-                function Groupbox:Detach(Position)
-                    if DetachData then return end
+                    -- 2) FLOAT: frame on the ScreenGui that carries the real content.
+                    -- above the window background (999) and survives tab switches.
+                    local Float = New("Frame", {
+                        BackgroundTransparency = 1,
+                        ClipsDescendants = true,
+                        Size = UDim2.fromOffset(BoxW, BoxH),
+                        Position = Position or UDim2.fromOffset(HolderAbs.X, HolderAbs.Y),
+                        ZIndex = 1000,
+                        Parent = ScreenGui,
+                    })
+                    table.insert(
+                        Library.Corners,
+                        New("UICorner", {
+                            CornerRadius = UDim.new(0, Library.CornerRadius),
+                            Parent = Float,
+                        })
+                    )
 
-                    -- lock the slot size BEFORE reparenting, while the box still has its layout size
-                    local W, H = BoxHolder.AbsoluteSize.X, BoxHolder.AbsoluteSize.Y
-                    local PH = MakePlaceholder(W, H)
+                    GroupboxHolder.Parent = Float
+                    GroupboxHolder.ZIndex = 1
 
-                    -- float the box; keep the width it had so the image slice matches
-                    BoxHolder.Parent = ScreenGui
-                    BoxHolder.AutomaticSize = Enum.AutomaticSize.None
-                    BoxHolder.Size = UDim2.fromOffset(W, H)
-                    BoxHolder.Position = Position or UDim2.fromOffset(PH.AbsolutePosition.X, PH.AbsolutePosition.Y)
-                    BoxHolder.ZIndex = 1000 -- above the window BackgroundImage (999)
+                    -- 3) PUZZLE-PIECE slice: a frozen copy of the window background, sized to
+                    -- the WHOLE window and pushed up/left by the box's offset, then clipped to
+                    -- the float. shows exactly the piece that was under the box, same overlay
+                    -- look as the docked UI. frozen -- doesn't re-slice as you drag.
+                    local SliceImage
+                    if BackgroundImage and BackgroundImage.Image ~= "" then
+                        local MainAbs = MainFrame.AbsolutePosition
+                        local MainSize = MainFrame.AbsoluteSize
+                        SliceImage = New("ImageLabel", {
+                            BackgroundTransparency = 1,
+                            Image = BackgroundImage.Image,
+                            ImageTransparency = BackgroundImage.ImageTransparency,
+                            ScaleType = Enum.ScaleType.Stretch,
+                            Size = UDim2.fromOffset(MainSize.X, MainSize.Y),
+                            Position = UDim2.fromOffset(-(HolderAbs.X - MainAbs.X), -(HolderAbs.Y - MainAbs.Y)),
+                            ZIndex = 2,
+                            Parent = Float,
+                        })
+                    end
 
-                    DetachData = { Placeholder = PH, W = W, H = H }
+                    DetachData = { Float = Float, Hole = Hole, Slice = SliceImage }
                     Library.Detached[Key] = {
-                        Box = Groupbox, Holder = BoxHolder,
-                        Placeholder = PH, Position = BoxHolder.Position,
+                        Box = Groupbox, Holder = Float,
+                        Placeholder = Hole, Position = Float.Position,
                     }
 
-                    -- the image background rides WITH the floated box, not the hole.
-                    -- GroupboxHolder is the box's own fill, so the cat slice sits behind it and moves with it.
-                    MakeElementBG(BoxHolder, GroupboxHolder, 999, "label")
-                    Library:RefreshElementBackgrounds()
-
                     if Library.OnDetachChanged then
-                        Library:SafeCallback(Library.OnDetachChanged, Key, { BoxHolder.Position.X.Offset, BoxHolder.Position.Y.Offset })
+                        Library:SafeCallback(Library.OnDetachChanged, Key, { Float.Position.X.Offset, Float.Position.Y.Offset })
                     end
                 end
 
                 function Groupbox:Redock()
                     if not DetachData then return end
-                    local PH = DetachData.Placeholder
 
-                    BoxHolder.Parent = DetachSide
-                    BoxHolder.AutomaticSize = Enum.AutomaticSize.Y
-                    BoxHolder.Size = UDim2.fromScale(1, 0)
-                    BoxHolder.Position = UDim2.fromOffset(0, 0)
-                    BoxHolder.ZIndex = 1
-                    if PH and PH.Parent then PH:Destroy() end
+                    GroupboxHolder.Parent = BoxHolder
+                    GroupboxHolder.ZIndex = 1
+
+                    if DetachData.Slice then pcall(function() DetachData.Slice:Destroy() end) end
+                    if DetachData.Hole and DetachData.Hole.Parent then DetachData.Hole:Destroy() end
+                    if DetachData.Float and DetachData.Float.Parent then DetachData.Float:Destroy() end
 
                     DetachData = nil
                     Library.Detached[Key] = nil
                     Groupbox:Resize()
-                    Library:RefreshElementBackgrounds()
 
                     if Library.OnDetachChanged then
                         Library:SafeCallback(Library.OnDetachChanged, Key, nil)
@@ -7957,7 +7981,7 @@ function Library:CreateWindow(WindowInfo)
                     if Input.Position.Y - GroupboxHolder.AbsolutePosition.Y > 34 then return end
 
                     StartPos = Input.Position
-                    FrameStart = BoxHolder.Position
+                    FrameStart = DetachData and DetachData.Float.Position or nil
                     PendingDetach = true
 
                     local Changed
@@ -7966,15 +7990,15 @@ function Library:CreateWindow(WindowInfo)
                         PendingDetach = false
                         if Changed and Changed.Connected then Changed:Disconnect() end
 
-                        if DetachData and DetachData.Placeholder then
-                            local PH = DetachData.Placeholder
-                            local dx = BoxHolder.AbsolutePosition.X - PH.AbsolutePosition.X
-                            local dy = BoxHolder.AbsolutePosition.Y - PH.AbsolutePosition.Y
+                        if DetachData then
+                            local Float = DetachData.Float
+                            local dx = Float.AbsolutePosition.X - BoxHolder.AbsolutePosition.X
+                            local dy = Float.AbsolutePosition.Y - BoxHolder.AbsolutePosition.Y
                             if math.sqrt(dx * dx + dy * dy) <= Library.DetachSnapDistance then
                                 Groupbox:Redock()
                             elseif Library.OnDetachChanged then
-                                Library.Detached[Key].Position = BoxHolder.Position
-                                Library:SafeCallback(Library.OnDetachChanged, Key, { BoxHolder.Position.X.Offset, BoxHolder.Position.Y.Offset })
+                                Library.Detached[Key].Position = Float.Position
+                                Library:SafeCallback(Library.OnDetachChanged, Key, { Float.Position.X.Offset, Float.Position.Y.Offset })
                             end
                         end
                     end)
@@ -7986,18 +8010,16 @@ function Library:CreateWindow(WindowInfo)
                     if not DetachData then
                         if math.abs(Delta.X) + math.abs(Delta.Y) < 6 then return end
                         Groupbox:Detach()
-                        FrameStart = BoxHolder.Position
+                        FrameStart = DetachData.Float.Position
                     end
-                    BoxHolder.Position = UDim2.fromOffset(
+                    local Float = DetachData.Float
+                    Float.Position = UDim2.fromOffset(
                         FrameStart.X.Offset + Delta.X,
                         FrameStart.Y.Offset + Delta.Y
                     )
-                    if Library.Detached[Key] then
-                        Library.Detached[Key].Position = BoxHolder.Position
-                    end
+                    Library.Detached[Key].Position = Float.Position
                 end))
             end
-
             Groupbox:Resize()
             Tab.Groupboxes[Info.Name] = Groupbox
 

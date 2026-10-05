@@ -7890,9 +7890,10 @@ function Library:CreateWindow(WindowInfo)
                     -- FLOAT: frame on the ScreenGui that carries the real content.
                     -- above the window background (999) and survives tab switches.
                     -- gets the normal groupbox outline so the floated box has a clean edge.
+                    -- NOTE: no ClipsDescendants here. clipping the Float to a square is what
+                    -- left the gray corner triangles. the rounded Clipper below does the clip.
                     local Float = New("Frame", {
                         BackgroundTransparency = 1,
-                        ClipsDescendants = true,
                         Size = UDim2.fromOffset(BoxW, BoxH),
                         Position = Position or UDim2.fromOffset(HolderAbs.X, HolderAbs.Y),
                         ZIndex = 1000,
@@ -7910,14 +7911,32 @@ function Library:CreateWindow(WindowInfo)
                     GroupboxHolder.Parent = Float
                     GroupboxHolder.ZIndex = 1
 
-                    -- PUZZLE-PIECE slice: a frozen copy of the window background, sized to
-                    -- the WHOLE window and pushed up/left by the box's offset, then clipped to
-                    -- the float. shows exactly the piece that was under the box, same overlay
-                    -- look as the docked UI. frozen -- doesn't re-slice as you drag.
+                    -- PUZZLE-PIECE slice. the slice image is WINDOW-sized and offset way off,
+                    -- so it must be clipped to the box. clipping it with a SQUARE (the Float's
+                    -- old ClipsDescendants) left gray triangles at the rounded corners. instead
+                    -- it goes inside a box-sized Clipper that is itself ROUNDED and clips its
+                    -- children -- so the clip boundary follows the corner radius, no triangles.
                     local SliceImage
                     if BackgroundImage and BackgroundImage.Image ~= "" then
                         local MainAbs = MainFrame.AbsolutePosition
                         local MainSize = MainFrame.AbsoluteSize
+
+                        local Clipper = New("Frame", {
+                            BackgroundTransparency = 1,
+                            ClipsDescendants = true,
+                            Size = UDim2.fromScale(1, 1),
+                            Position = UDim2.fromScale(0, 0),
+                            ZIndex = 2,
+                            Parent = Float,
+                        })
+                        table.insert(
+                            Library.Corners,
+                            New("UICorner", {
+                                CornerRadius = UDim.new(0, Library.CornerRadius),
+                                Parent = Clipper,
+                            })
+                        )
+
                         SliceImage = New("ImageLabel", {
                             BackgroundTransparency = 1,
                             Image = BackgroundImage.Image,
@@ -7926,7 +7945,7 @@ function Library:CreateWindow(WindowInfo)
                             Size = UDim2.fromOffset(MainSize.X, MainSize.Y),
                             Position = UDim2.fromOffset(-(HolderAbs.X - MainAbs.X), -(HolderAbs.Y - MainAbs.Y)),
                             ZIndex = 2,
-                            Parent = Float,
+                            Parent = Clipper,
                         })
                     end
 

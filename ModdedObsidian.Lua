@@ -7877,15 +7877,16 @@ function Library:CreateWindow(WindowInfo)
             --// Detach support (custom mod) \\--
             if Info.Detachable then
                 local Key = DetachKey(Name, Info.Name)
-                local Detaching, DetachData = false, nil
+                local DetachData = nil
 
-                -- the hole left behind in the layout; renders as BackgroundColor (the "black spot")
-                local function MakePlaceholder()
+                -- the hole: a solid, fixed-size rectangle that holds the slot open so
+                -- the boxes below don't slide up. NOT AutomaticSize, height is locked.
+                local function MakePlaceholder(W, H)
                     local PH = New("Frame", {
+                        AutomaticSize = Enum.AutomaticSize.None,
                         BackgroundColor3 = "BackgroundColor",
-                        Size = UDim2.fromOffset(BoxHolder.AbsoluteSize.X, BoxHolder.AbsoluteSize.Y),
+                        Size = UDim2.fromOffset(W, H),
                         LayoutOrder = BoxHolder.LayoutOrder,
-                        Visible = true,
                         Parent = DetachSide,
                     })
                     table.insert(
@@ -7902,23 +7903,26 @@ function Library:CreateWindow(WindowInfo)
                 function Groupbox:Detach(Position)
                     if DetachData then return end
 
+                    -- lock the slot size BEFORE reparenting, while the box still has its layout size
                     local W, H = BoxHolder.AbsoluteSize.X, BoxHolder.AbsoluteSize.Y
-                    local PH = MakePlaceholder()
+                    local PH = MakePlaceholder(W, H)
 
-                    -- float the box on the ScreenGui so it survives tab switches
+                    -- float the box; keep the width it had so the image slice matches
                     BoxHolder.Parent = ScreenGui
+                    BoxHolder.AutomaticSize = Enum.AutomaticSize.None
                     BoxHolder.Size = UDim2.fromOffset(W, H)
                     BoxHolder.Position = Position or UDim2.fromOffset(PH.AbsolutePosition.X, PH.AbsolutePosition.Y)
-                    BoxHolder.ZIndex = 50
+                    BoxHolder.ZIndex = 1000 -- above the window BackgroundImage (999)
 
-                    DetachData = { Placeholder = PH, Position = BoxHolder.Position }
+                    DetachData = { Placeholder = PH, W = W, H = H }
                     Library.Detached[Key] = {
                         Box = Groupbox, Holder = BoxHolder,
                         Placeholder = PH, Position = BoxHolder.Position,
                     }
 
-                    -- image background behind the floated box (uses the notification kind's look)
-                    MakeElementBG(BoxHolder, GroupboxHolder, 49, "label")
+                    -- the image background rides WITH the floated box, not the hole.
+                    -- GroupboxHolder is the box's own fill, so the cat slice sits behind it and moves with it.
+                    MakeElementBG(BoxHolder, GroupboxHolder, 999, "label")
                     Library:RefreshElementBackgrounds()
 
                     if Library.OnDetachChanged then
@@ -7931,9 +7935,10 @@ function Library:CreateWindow(WindowInfo)
                     local PH = DetachData.Placeholder
 
                     BoxHolder.Parent = DetachSide
+                    BoxHolder.AutomaticSize = Enum.AutomaticSize.Y
                     BoxHolder.Size = UDim2.fromScale(1, 0)
                     BoxHolder.Position = UDim2.fromOffset(0, 0)
-                    BoxHolder.ZIndex = PH.ZIndex
+                    BoxHolder.ZIndex = 1
                     if PH and PH.Parent then PH:Destroy() end
 
                     DetachData = nil
@@ -7946,8 +7951,6 @@ function Library:CreateWindow(WindowInfo)
                     end
                 end
 
-                -- drag by the title bar (GroupboxHolder is the icon/title row's parent;
-                -- the label sits at y<=34, so grabs there start a drag)
                 local StartPos, FrameStart, PendingDetach
                 GroupboxHolder.InputBegan:Connect(function(Input)
                     if not IsClickInput(Input) then return end
@@ -7963,7 +7966,6 @@ function Library:CreateWindow(WindowInfo)
                         PendingDetach = false
                         if Changed and Changed.Connected then Changed:Disconnect() end
 
-                        -- on release, if we're near the home slot, snap back
                         if DetachData and DetachData.Placeholder then
                             local PH = DetachData.Placeholder
                             local dx = BoxHolder.AbsolutePosition.X - PH.AbsolutePosition.X
@@ -7982,7 +7984,6 @@ function Library:CreateWindow(WindowInfo)
                     if not (PendingDetach and IsHoverInput(Input)) then return end
                     local Delta = Input.Position - StartPos
                     if not DetachData then
-                        -- first meaningful movement detaches it
                         if math.abs(Delta.X) + math.abs(Delta.Y) < 6 then return end
                         Groupbox:Detach()
                         FrameStart = BoxHolder.Position

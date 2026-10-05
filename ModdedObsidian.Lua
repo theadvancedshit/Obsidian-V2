@@ -7875,12 +7875,6 @@ function Library:CreateWindow(WindowInfo)
             setmetatable(Groupbox, BaseGroupbox)
 
             --// Detach support (custom mod) \\--
-            -- Drag a detachable groupbox out by its title bar. Only the box's CONTENT
-            -- (GroupboxHolder) floats out on the ScreenGui; BoxHolder stays in the list so
-            -- a fixed-size "hole" can hold its slot open (boxes below never slide up). The
-            -- floated box gets its own background-image slice, clipped to its rounded shape
-            -- and overlaid on top exactly like the real window's ZIndex-999 overlay, so it
-            -- shows the piece of the image that was under it. Redock removes all of it.
             if Info.Detachable then
                 local Key = DetachKey(Name, Info.Name)
                 local DetachData = nil
@@ -7888,57 +7882,38 @@ function Library:CreateWindow(WindowInfo)
                 function Groupbox:Detach(Position)
                     if DetachData then return end
 
-                    -- capture BEFORE anything moves, so hole + slice line up with the slot
+                    -- capture BEFORE moving anything, so the slice lines up exactly
                     local BoxW = GroupboxHolder.AbsoluteSize.X
                     local BoxH = GroupboxHolder.AbsoluteSize.Y
                     local HolderAbs = GroupboxHolder.AbsolutePosition
 
-                    -- 1) HOLE: fixed-size rounded frame left INSIDE BoxHolder where the content
-                    -- was. BoxHolder never leaves the list, so the UIListLayout keeps the slot
-                    -- and nothing below slides up. Outline + solid fill = the black missing piece.
-                    local Hole = New("Frame", {
-                        AutomaticSize = Enum.AutomaticSize.None,
-                        BackgroundColor3 = "BackgroundColor",
-                        Size = UDim2.new(1, 0, 0, BoxH),
-                        Parent = BoxHolder,
-                    })
-                    table.insert(
-                        Library.Corners,
-                        New("UICorner", {
-                            CornerRadius = UDim.new(0, Library.CornerRadius),
-                            Parent = Hole,
-                        })
-                    )
-                    Library:AddOutline(Hole)
-                    Library:AddToRegistry(Hole, { BackgroundColor3 = "BackgroundColor" })
-
-                    -- lock BoxHolder's height to the slot so AutomaticSize doesn't collapse it
-                    -- once the content leaves (the hole is now the only thing holding the space)
-                    BoxHolder.AutomaticSize = Enum.AutomaticSize.None
-                    BoxHolder.Size = UDim2.fromOffset(BoxHolder.AbsoluteSize.X, BoxH)
-
-                    -- 2) FLOAT: positioner on the ScreenGui that carries the real content, above
-                    -- the window background overlay (999). survives tab switches.
+                    -- FLOAT: frame on the ScreenGui that carries the real content.
+                    -- above the window background (999) and survives tab switches.
+                    -- gets the normal groupbox outline so the floated box has a clean edge.
                     local Float = New("Frame", {
                         BackgroundTransparency = 1,
+                        ClipsDescendants = true,
                         Size = UDim2.fromOffset(BoxW, BoxH),
                         Position = Position or UDim2.fromOffset(HolderAbs.X, HolderAbs.Y),
                         ZIndex = 1000,
                         Parent = ScreenGui,
                     })
+                    table.insert(
+                        Library.Corners,
+                        New("UICorner", {
+                            CornerRadius = UDim.new(0, Library.CornerRadius),
+                            Parent = Float,
+                        })
+                    )
+                    Library:AddOutline(Float) -- same outline every groupbox has
 
                     GroupboxHolder.Parent = Float
-                    GroupboxHolder.Position = UDim2.fromScale(0, 0)
-                    GroupboxHolder.Size = UDim2.fromOffset(BoxW, BoxH)
-                    GroupboxHolder.ZIndex = 1000
-                    -- clip the slice to the box's rounded shape -> no square gray corners
-                    GroupboxHolder.ClipsDescendants = true
+                    GroupboxHolder.ZIndex = 1
 
-                    -- 3) PUZZLE-PIECE slice: a frozen copy of the window background, sized to the
-                    -- WHOLE window and pushed up/left by the box's old offset, parented INSIDE
-                    -- GroupboxHolder at a high ZIndex so it paints ON TOP of the box's fill and
-                    -- content -- mirroring the real ZIndex-999 overlay exactly. Clipped by
-                    -- GroupboxHolder's ClipsDescendants, so only the box-shaped slice shows.
+                    -- PUZZLE-PIECE slice: a frozen copy of the window background, sized to
+                    -- the WHOLE window and pushed up/left by the box's offset, then clipped to
+                    -- the float. shows exactly the piece that was under the box, same overlay
+                    -- look as the docked UI. frozen -- doesn't re-slice as you drag.
                     local SliceImage
                     if BackgroundImage and BackgroundImage.Image ~= "" then
                         local MainAbs = MainFrame.AbsolutePosition
@@ -7950,15 +7925,15 @@ function Library:CreateWindow(WindowInfo)
                             ScaleType = Enum.ScaleType.Stretch,
                             Size = UDim2.fromOffset(MainSize.X, MainSize.Y),
                             Position = UDim2.fromOffset(-(HolderAbs.X - MainAbs.X), -(HolderAbs.Y - MainAbs.Y)),
-                            ZIndex = 999, -- on top, like the window's own overlay
-                            Parent = GroupboxHolder,
+                            ZIndex = 2,
+                            Parent = Float,
                         })
                     end
 
-                    DetachData = { Float = Float, Hole = Hole, Slice = SliceImage }
+                    DetachData = { Float = Float, Slice = SliceImage }
                     Library.Detached[Key] = {
                         Box = Groupbox, Holder = Float,
-                        Placeholder = Hole, Position = Float.Position,
+                        Position = Float.Position,
                     }
 
                     if Library.OnDetachChanged then
@@ -7969,21 +7944,11 @@ function Library:CreateWindow(WindowInfo)
                 function Groupbox:Redock()
                     if not DetachData then return end
 
-                    -- strip the slice + float extras, put the content back in its BoxHolder
-                    if DetachData.Slice then pcall(function() DetachData.Slice:Destroy() end) end
-
-                    GroupboxHolder.ClipsDescendants = false
-                    GroupboxHolder.ZIndex = 1
                     GroupboxHolder.Parent = BoxHolder
-                    GroupboxHolder.Position = UDim2.fromOffset(0, 0)
-                    GroupboxHolder.Size = UDim2.fromScale(1, 0)
+                    GroupboxHolder.ZIndex = 1
 
-                    if DetachData.Hole and DetachData.Hole.Parent then DetachData.Hole:Destroy() end
+                    if DetachData.Slice then pcall(function() DetachData.Slice:Destroy() end) end
                     if DetachData.Float and DetachData.Float.Parent then DetachData.Float:Destroy() end
-
-                    -- give BoxHolder its auto-height back now that the content fills it again
-                    BoxHolder.AutomaticSize = Enum.AutomaticSize.Y
-                    BoxHolder.Size = UDim2.fromScale(1, 0)
 
                     DetachData = nil
                     Library.Detached[Key] = nil
@@ -8009,13 +7974,11 @@ function Library:CreateWindow(WindowInfo)
                         PendingDetach = false
                         if Changed and Changed.Connected then Changed:Disconnect() end
 
-                        -- on release: near the hole -> redock. the hole lives in the panel, so
-                        -- its AbsolutePosition is the real slot to snap back to.
-                        if DetachData and DetachData.Hole then
+                        -- near the box's home slot on release -> redock
+                        if DetachData then
                             local Float = DetachData.Float
-                            local Hole = DetachData.Hole
-                            local dx = Float.AbsolutePosition.X - Hole.AbsolutePosition.X
-                            local dy = Float.AbsolutePosition.Y - Hole.AbsolutePosition.Y
+                            local dx = Float.AbsolutePosition.X - BoxHolder.AbsolutePosition.X
+                            local dy = Float.AbsolutePosition.Y - BoxHolder.AbsolutePosition.Y
                             if math.sqrt(dx * dx + dy * dy) <= Library.DetachSnapDistance then
                                 Groupbox:Redock()
                             elseif Library.OnDetachChanged then
@@ -8030,7 +7993,6 @@ function Library:CreateWindow(WindowInfo)
                     if not (PendingDetach and IsHoverInput(Input)) then return end
                     local Delta = Input.Position - StartPos
                     if not DetachData then
-                        -- first real movement detaches it
                         if math.abs(Delta.X) + math.abs(Delta.Y) < 6 then return end
                         Groupbox:Detach()
                         FrameStart = DetachData.Float.Position

@@ -2263,7 +2263,7 @@ function Library:AddTooltip(InfoStr: string, DisabledInfoStr: string, HoverInsta
         end
     end
 
-    table.insert(Tooltips, TooltipLabel)
+    table.insert(Tooltips, TooltipTable)
     return TooltipTable
 end
 
@@ -2271,7 +2271,81 @@ function Library:OnUnload(Callback)
     table.insert(Library.UnloadSignals, Callback)
 end
 
+--// Revert Tracking (custom mod) \\--
+-- Off by default. Set Library.UndoAll = true (or UndoAll = true in CreateWindow)
+-- and Unload will turn toggles off, reset sliders, and restore anything changed
+-- through Library:SetProperty.
+Library.UndoAll = false
+Library.TrackedProperties = setmetatable({}, { __mode = "k" }) -- [Instance] = { [Prop] = { Value = original } }
+
+function Library:TrackProperty(Target: Instance, Property: string)
+    if typeof(Target) ~= "Instance" then
+        return
+    end
+
+    local Saved = Library.TrackedProperties[Target]
+    if not Saved then
+        Saved = {}
+        Library.TrackedProperties[Target] = Saved
+    end
+
+    -- only snapshot the FIRST time, so we keep the true pre-script value
+    if Saved[Property] == nil then
+        local Ok, Value = pcall(function()
+            return Target[Property]
+        end)
+        if Ok then
+            Saved[Property] = { Value = Value }
+        end
+    end
+end
+
+function Library:SetProperty(Target: Instance, Property: string, Value: any)
+    Library:TrackProperty(Target, Property)
+    Target[Property] = Value
+end
+
+function Library:RestoreProperties()
+    for Target, Props in Library.TrackedProperties do
+        for Property, Saved in Props do
+            pcall(function()
+                Target[Property] = Saved.Value
+            end)
+        end
+    end
+    table.clear(Library.TrackedProperties)
+end
+
+function Library:ResetOptions()
+    for _, Toggle in Toggles do
+        if Toggle.Value then
+            local WasDisabled = Toggle.Disabled
+            Toggle.Disabled = false -- SetValue bails on disabled toggles
+            Toggle:SetValue(false)
+            Toggle.Disabled = WasDisabled
+        end
+    end
+
+    for _, Option in Options do
+        if Option.Type == "Slider" and Option.Default ~= nil and Option.Value ~= Option.Default then
+            local WasDisabled = Option.Disabled
+            Option.Disabled = false
+            Option:SetValue(Option.Default)
+            Option.Disabled = WasDisabled
+        end
+    end
+end
+
 function Library:Unload()
+    if Library.Unloaded or Library.Unloading then
+        return
+    end
+    Library.Unloading = true
+
+    -- read the flag ONCE up front: if it's bound to a toggle, ResetOptions
+    -- would flip that toggle off and change the flag halfway through
+    local UndoAll = Library.UndoAll == true
+
     for Index = #Library.Signals, 1, -1 do
         local Connection = table.remove(Library.Signals, Index)
         if Connection and Connection.Connected then
@@ -2279,8 +2353,16 @@ function Library:Unload()
         end
     end
 
+    if UndoAll then
+        Library:ResetOptions()
+    end
+
     for _, Callback in Library.UnloadSignals do
         Library:SafeCallback(Callback)
+    end
+
+    if UndoAll then
+        Library:RestoreProperties() -- last, so nothing above overwrites it
     end
 
     for _, Tooltip in Tooltips do
@@ -6777,6 +6859,9 @@ function Library:CreateWindow(WindowInfo)
     Library.Scheme.Font = WindowInfo.Font
     Library.ToggleKeybind = WindowInfo.ToggleKeybind
     Library.GlobalSearch = WindowInfo.GlobalSearch
+    if WindowInfo.UndoAll ~= nil then
+        Library.UndoAll = WindowInfo.UndoAll == true
+    end
 
     local IsDefaultSearchbarSize = WindowInfo.SearchbarSize == UDim2.fromScale(1, 1)
     local MainFrame

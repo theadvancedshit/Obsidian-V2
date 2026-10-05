@@ -1372,6 +1372,30 @@ function Library:SetElementBackgroundTint(Enabled: boolean)
     Library:RefreshElementBackgrounds()
 end
 
+--// Detachable Groupboxes (custom mod) \\--
+-- A detachable groupbox can be dragged out of its tab by its title bar. When out, a
+-- same-size placeholder is left in the layout (the "missing puzzle piece"), the box
+-- floats on the ScreenGui across all tabs, and its element-background image follows it.
+-- Positions are keyed by "<Tab>::<Name>" and only recorded while a box is detached.
+Library.Detached = {}            -- key -> { Box, Holder, Placeholder, Position = UDim2 }
+Library.DetachSnapDistance = 90  -- how close (px) the box must be to its slot to redock
+Library.OnDetachChanged = nil    -- optional callback(key, position|nil); set by your script to save
+
+local function DetachKey(TabName, BoxName)
+    return tostring(TabName) .. "::" .. tostring(BoxName)
+end
+
+function Library:GetDetachedPositions()
+    -- returns { ["Tab::Name"] = {X, Y} } for every currently-detached box
+    local Out = {}
+    for Key, Info in Library.Detached do
+        if Info.Position then
+            Out[Key] = { Info.Position.X.Offset, Info.Position.Y.Offset }
+        end
+    end
+    return Out
+end
+
 ScreenGui.DescendantRemoving:Connect(function(Instance)
     Library:RemoveFromRegistry(Instance)
 end)
@@ -7743,11 +7767,12 @@ function Library:CreateWindow(WindowInfo)
         end
 
         function Tab:AddGroupbox(Info)
+            local DetachSide = Info.Side == 1 and TabLeft or TabRight
             local BoxHolder = New("Frame", {
                 AutomaticSize = Enum.AutomaticSize.Y,
                 BackgroundTransparency = 1,
                 Size = UDim2.fromScale(1, 0),
-                Parent = Info.Side == 1 and TabLeft or TabRight,
+                Parent = DetachSide,
             })
             New("UIListLayout", {
                 Padding = UDim.new(0, 6),
@@ -7849,18 +7874,141 @@ function Library:CreateWindow(WindowInfo)
 
             setmetatable(Groupbox, BaseGroupbox)
 
+            --// Detach support (custom mod) \\--
+            if Info.Detachable then
+                local Key = DetachKey(Name, Info.Name)
+                local Detaching, DetachData = false, nil
+
+                -- the hole left behind in the layout; renders as BackgroundColor (the "black spot")
+                local function MakePlaceholder()
+                    local PH = New("Frame", {
+                        BackgroundColor3 = "BackgroundColor",
+                        Size = UDim2.fromOffset(BoxHolder.AbsoluteSize.X, BoxHolder.AbsoluteSize.Y),
+                        LayoutOrder = BoxHolder.LayoutOrder,
+                        Visible = true,
+                        Parent = DetachSide,
+                    })
+                    table.insert(
+                        Library.Corners,
+                        New("UICorner", {
+                            CornerRadius = UDim.new(0, Library.CornerRadius),
+                            Parent = PH,
+                        })
+                    )
+                    Library:AddToRegistry(PH, { BackgroundColor3 = "BackgroundColor" })
+                    return PH
+                end
+
+                function Groupbox:Detach(Position)
+                    if DetachData then return end
+
+                    local W, H = BoxHolder.AbsoluteSize.X, BoxHolder.AbsoluteSize.Y
+                    local PH = MakePlaceholder()
+
+                    -- float the box on the ScreenGui so it survives tab switches
+                    BoxHolder.Parent = ScreenGui
+                    BoxHolder.Size = UDim2.fromOffset(W, H)
+                    BoxHolder.Position = Position or UDim2.fromOffset(PH.AbsolutePosition.X, PH.AbsolutePosition.Y)
+                    BoxHolder.ZIndex = 50
+
+                    DetachData = { Placeholder = PH, Position = BoxHolder.Position }
+                    Library.Detached[Key] = {
+                        Box = Groupbox, Holder = BoxHolder,
+                        Placeholder = PH, Position = BoxHolder.Position,
+                    }
+
+                    -- image background behind the floated box (uses the notification kind's look)
+                    MakeElementBG(BoxHolder, GroupboxHolder, 49, "label")
+                    Library:RefreshElementBackgrounds()
+
+                    if Library.OnDetachChanged then
+                        Library:SafeCallback(Library.OnDetachChanged, Key, { BoxHolder.Position.X.Offset, BoxHolder.Position.Y.Offset })
+                    end
+                end
+
+                function Groupbox:Redock()
+                    if not DetachData then return end
+                    local PH = DetachData.Placeholder
+
+                    BoxHolder.Parent = DetachSide
+                    BoxHolder.Size = UDim2.fromScale(1, 0)
+                    BoxHolder.Position = UDim2.fromOffset(0, 0)
+                    BoxHolder.ZIndex = PH.ZIndex
+                    if PH and PH.Parent then PH:Destroy() end
+
+                    DetachData = nil
+                    Library.Detached[Key] = nil
+                    Groupbox:Resize()
+                    Library:RefreshElementBackgrounds()
+
+                    if Library.OnDetachChanged then
+                        Library:SafeCallback(Library.OnDetachChanged, Key, nil)
+                    end
+                end
+
+                -- drag by the title bar (GroupboxHolder is the icon/title row's parent;
+                -- the label sits at y<=34, so grabs there start a drag)
+                local StartPos, FrameStart, PendingDetach
+                GroupboxHolder.InputBegan:Connect(function(Input)
+                    if not IsClickInput(Input) then return end
+                    if Input.Position.Y - GroupboxHolder.AbsolutePosition.Y > 34 then return end
+
+                    StartPos = Input.Position
+                    FrameStart = BoxHolder.Position
+                    PendingDetach = true
+
+                    local Changed
+                    Changed = Input.Changed:Connect(function()
+                        if Input.UserInputState ~= Enum.UserInputState.End then return end
+                        PendingDetach = false
+                        if Changed and Changed.Connected then Changed:Disconnect() end
+
+                        -- on release, if we're near the home slot, snap back
+                        if DetachData and DetachData.Placeholder then
+                            local PH = DetachData.Placeholder
+                            local dx = BoxHolder.AbsolutePosition.X - PH.AbsolutePosition.X
+                            local dy = BoxHolder.AbsolutePosition.Y - PH.AbsolutePosition.Y
+                            if math.sqrt(dx * dx + dy * dy) <= Library.DetachSnapDistance then
+                                Groupbox:Redock()
+                            elseif Library.OnDetachChanged then
+                                Library.Detached[Key].Position = BoxHolder.Position
+                                Library:SafeCallback(Library.OnDetachChanged, Key, { BoxHolder.Position.X.Offset, BoxHolder.Position.Y.Offset })
+                            end
+                        end
+                    end)
+                end)
+
+                Library:GiveSignal(UserInputService.InputChanged:Connect(function(Input)
+                    if not (PendingDetach and IsHoverInput(Input)) then return end
+                    local Delta = Input.Position - StartPos
+                    if not DetachData then
+                        -- first meaningful movement detaches it
+                        if math.abs(Delta.X) + math.abs(Delta.Y) < 6 then return end
+                        Groupbox:Detach()
+                        FrameStart = BoxHolder.Position
+                    end
+                    BoxHolder.Position = UDim2.fromOffset(
+                        FrameStart.X.Offset + Delta.X,
+                        FrameStart.Y.Offset + Delta.Y
+                    )
+                    if Library.Detached[Key] then
+                        Library.Detached[Key].Position = BoxHolder.Position
+                    end
+                end))
+            end
+
             Groupbox:Resize()
             Tab.Groupboxes[Info.Name] = Groupbox
 
             return Groupbox
         end
 
-        function Tab:AddLeftGroupbox(Name, IconName)
-            return Tab:AddGroupbox({ Side = 1, Name = Name, IconName = IconName })
+        function Tab:AddLeftGroupbox(Name, IconName, Detachable)
+            return Tab:AddGroupbox({ Side = 1, Name = Name, IconName = IconName, Detachable = Detachable })
         end
 
-        function Tab:AddRightGroupbox(Name, IconName)
-            return Tab:AddGroupbox({ Side = 2, Name = Name, IconName = IconName })
+        function Tab:AddRightGroupbox(Name, IconName, Detachable)
+            return Tab:AddGroupbox({ Side = 2, Name = Name, IconName = IconName, Detachable = Detachable })
         end
 
         function Tab:AddTabbox(Info)

@@ -7882,14 +7882,13 @@ function Library:CreateWindow(WindowInfo)
                 function Groupbox:Detach(Position)
                     if DetachData then return end
 
-                    -- capture BEFORE moving anything, so the hole + slice line up exactly
                     local BoxW = GroupboxHolder.AbsoluteSize.X
                     local BoxH = GroupboxHolder.AbsoluteSize.Y
                     local HolderAbs = GroupboxHolder.AbsolutePosition
 
-                    -- 1) HOLE: solid rounded frame left IN the list where the box was.
-                    -- child of BoxHolder, so the UIListLayout keeps the exact slot and
-                    -- nothing below slides up. stays only on this tab, like the box would.
+                    -- 1) HOLE: solid rounded frame WITH an outline, left in the list where the
+                    -- box was. locked height so AutomaticSize can't collapse it, outline so it
+                    -- reads as a real missing-piece slot instead of blending into the panel.
                     local Hole = New("Frame", {
                         BackgroundColor3 = "BackgroundColor",
                         Size = UDim2.new(1, 0, 0, BoxH),
@@ -7902,33 +7901,26 @@ function Library:CreateWindow(WindowInfo)
                             Parent = Hole,
                         })
                     )
+                    Library:AddOutline(Hole)
                     Library:AddToRegistry(Hole, { BackgroundColor3 = "BackgroundColor" })
 
-                    -- 2) FLOAT: frame on the ScreenGui that carries the real content.
-                    -- above the window background (999) and survives tab switches.
+                    -- 2) FLOAT: no clipping, no image. just a positioner that carries the box.
+                    -- the rounded box clips its own slice, so the float never needs to.
                     local Float = New("Frame", {
                         BackgroundTransparency = 1,
-                        ClipsDescendants = true,
                         Size = UDim2.fromOffset(BoxW, BoxH),
                         Position = Position or UDim2.fromOffset(HolderAbs.X, HolderAbs.Y),
                         ZIndex = 1000,
                         Parent = ScreenGui,
                     })
-                    table.insert(
-                        Library.Corners,
-                        New("UICorner", {
-                            CornerRadius = UDim.new(0, Library.CornerRadius),
-                            Parent = Float,
-                        })
-                    )
 
                     GroupboxHolder.Parent = Float
                     GroupboxHolder.ZIndex = 1
 
-                    -- 3) PUZZLE-PIECE slice: a frozen copy of the window background, sized to
-                    -- the WHOLE window and pushed up/left by the box's offset, then clipped to
-                    -- the float. shows exactly the piece that was under the box, same overlay
-                    -- look as the docked UI. frozen -- doesn't re-slice as you drag.
+                    -- 3) PUZZLE-PIECE slice: parented INSIDE GroupboxHolder (which has its own
+                    -- UICorner), so it's clipped to the same rounded shape as the box -- no gray
+                    -- square corners. sized to the whole window, pushed up/left by the box's
+                    -- offset so it shows exactly the piece that was under it. frozen slice.
                     local SliceImage
                     if BackgroundImage and BackgroundImage.Image ~= "" then
                         local MainAbs = MainFrame.AbsolutePosition
@@ -7940,8 +7932,8 @@ function Library:CreateWindow(WindowInfo)
                             ScaleType = Enum.ScaleType.Stretch,
                             Size = UDim2.fromOffset(MainSize.X, MainSize.Y),
                             Position = UDim2.fromOffset(-(HolderAbs.X - MainAbs.X), -(HolderAbs.Y - MainAbs.Y)),
-                            ZIndex = 2,
-                            Parent = Float,
+                            ZIndex = 0, -- behind the box's own content
+                            Parent = GroupboxHolder,
                         })
                     end
 
